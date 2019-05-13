@@ -113,6 +113,16 @@
 /* Globals                                                              */
 /************************************************************************/
 
+#define BUT2_PIO           PIOD
+#define BUT2_PIO_ID        ID_PIOD
+#define BUT2_PIO_IDX       28u
+#define BUT2_PIO_IDX_MASK  (1u << BUT1_PIO_IDX)
+
+#define BUT2_PIO           PIOC
+#define BUT2_PIO_ID        ID_PIOC
+#define BUT2_PIO_IDX       31u
+#define BUT2_PIO_IDX_MASK  (1u << BUT1_PIO_IDX)
+
 
 struct ili9488_opt_t g_ili9488_display_opt;
 const uint32_t BUTTON_W = 120;
@@ -126,11 +136,11 @@ const uint32_t BUTTON_Y = ILI9488_LCD_HEIGHT/2;
 volatile bool g_is_res_done = false;
 
 /** The conversion data value */
-volatile uint32_t g_res_value = 0;
+volatile uint32_t g_ul_value = 0;
 
 volatile bool g_delay = false;
 
-#define AFEC_CHANNEL_RES_PIN 0
+#define AFEC_CHANNEL 0
 	
 /************************************************************************/
 /* RTOS                                                                  */
@@ -141,8 +151,8 @@ volatile bool g_delay = false;
 #define TASK_LCD_STACK_SIZE            (2*1024/sizeof(portSTACK_TYPE))
 #define TASK_LCD_STACK_PRIORITY        (tskIDLE_PRIORITY)
 
-#define AFEC_STACK_SIZE (2*1024/sizeof(portSTACK_TYPE))
-#define AFEC_STACK_PRIORITY (tskIDLE_PRIORITY)
+#define TASK_AFEC_STACK_SIZE (2*1024/sizeof(portSTACK_TYPE))
+#define TASK_AFEC_STACK_PRIORITY (tskIDLE_PRIORITY)
 
 typedef struct {
   uint x;
