@@ -113,15 +113,28 @@
 /* Globals                                                              */
 /************************************************************************/
 
-#define BUT2_PIO           PIOD
-#define BUT2_PIO_ID        ID_PIOD
-#define BUT2_PIO_IDX       28u
-#define BUT2_PIO_IDX_MASK  (1u << BUT1_PIO_IDX)
+#define BUT1_PIO           PIOD
+#define BUT1_PIO_ID        ID_PIOD
+#define BUT1_PIO_IDX       28u
+#define BUT1_PIO_IDX_MASK  (1u << BUT1_PIO_IDX)
 
 #define BUT2_PIO           PIOC
 #define BUT2_PIO_ID        ID_PIOC
 #define BUT2_PIO_IDX       31u
 #define BUT2_PIO_IDX_MASK  (1u << BUT1_PIO_IDX)
+
+#define PIO_PWM_0 PIOA
+#define ID_PIO_PWM_0 ID_PIOA
+#define MASK_PIN_PWM_0 (1 << 0)
+
+/** PWM frequency in Hz */
+#define PWM_FREQUENCY      1000
+/** Period value of PWM output waveform */
+#define PERIOD_VALUE       100
+/** Initial duty cycle value */
+#define INIT_DUTY_VALUE    0
+
+pwm_channel_t g_pwm_channel_led;
 
 
 struct ili9488_opt_t g_ili9488_display_opt;
@@ -139,6 +152,7 @@ volatile bool g_is_res_done = false;
 volatile uint32_t g_ul_value = 0;
 
 volatile bool g_delay = false;
+volatile char texto[32];
 
 #define AFEC_CHANNEL 0
 	
@@ -154,6 +168,12 @@ volatile bool g_delay = false;
 #define TASK_AFEC_STACK_SIZE (2*1024/sizeof(portSTACK_TYPE))
 #define TASK_AFEC_STACK_PRIORITY (tskIDLE_PRIORITY)
 
+#define TASK_PWM_STACK_SIZE                (1024/sizeof(portSTACK_TYPE))
+#define TASK_PWM_STACK_PRIORITY            (tskIDLE_PRIORITY)
+
+#define TASK_LED_STACK_SIZE (1024/sizeof(portSTACK_TYPE)
+#define TASK_LED_STACK_PRIORITY  (tskIDLE_PRIORITY)
+
 typedef struct {
   uint x;
   uint y;
@@ -161,6 +181,8 @@ typedef struct {
 
 QueueHandle_t xQueueTouch;
 SemaphoreHandle_t xSemaphore;
+SemaphoreHandle_t xSemaphore_but1;
+SemaphoreHandle_t xSemaphore_but2;
 
 /************************************************************************/
 /* RTOS hooks                                                           */
@@ -221,6 +243,20 @@ static void configure_lcd(void){
 
 	/* Initialize LCD */
 	ili9488_init(&g_ili9488_display_opt);
+}
+
+void but1_callback(void){
+	BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+	printf("but_callback \n");
+	xSemaphoreGiveFromISR(xSemaphore_but1, &xHigherPriorityTaskWoken);
+	printf("semafaro tx \n");
+}
+
+void but2_callback(void){
+	BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+	printf("but_callback2222 \n");
+	xSemaphoreGiveFromISR(xSemaphore_but2, &xHigherPriorityTaskWoken);
+	printf("semafaro tx2222 \n");
 }
 
 /**
@@ -418,6 +454,97 @@ static void config_ADC(void){
 	afec_channel_enable(AFEC0, AFEC_CHANNEL);
 }
 
+void io_init(void)
+{
+	// Inicializa clock do periférico PIO responsavel pelo botao
+	pmc_enable_periph_clk(BUT1_PIO_ID);
+	pmc_enable_periph_clk(BUT2_PIO_ID);
+
+	// Configura PIO para lidar com o pino do botão como entrada
+	// com pull-up
+	pio_configure(BUT1_PIO, PIO_INPUT, BUT1_PIO_IDX_MASK, PIO_PULLUP);
+	pio_configure(BUT2_PIO, PIO_INPUT, BUT2_PIO_IDX_MASK, PIO_PULLUP);
+
+	// Configura interrupção no pino referente ao botao e associa
+	// função de callback caso uma interrupção for gerada
+	// a função de callback é a: but_callback()
+	pio_handler_set(BUT1_PIO,
+	BUT1_PIO_ID,
+	BUT1_PIO_IDX_MASK,
+	PIO_IT_FALL_EDGE,
+	but1_callback);
+	
+	pio_handler_set(BUT2_PIO,
+	BUT2_PIO_ID,
+	BUT2_PIO_IDX_MASK,
+	PIO_IT_FALL_EDGE,
+	but2_callback);
+
+	// Ativa interrupção
+	pio_enable_interrupt(BUT1_PIO, BUT1_PIO_IDX_MASK);
+	pio_enable_interrupt(BUT2_PIO, BUT2_PIO_IDX_MASK);
+
+	// Configura NVIC para receber interrupcoes do PIO do botao
+	// com prioridade 4 (quanto mais próximo de 0 maior)
+	NVIC_EnableIRQ(BUT1_PIO_ID);
+	NVIC_SetPriority(BUT1_PIO_ID, 4); // Prioridade 4
+	NVIC_EnableIRQ(BUT2_PIO_ID);
+	NVIC_SetPriority(BUT2_PIO_ID, 4);
+}
+
+void PWM0_init(uint channel, uint duty){
+	/* Enable PWM peripheral clock */
+	pmc_enable_periph_clk(ID_PWM0);
+
+	/* Disable PWM channels for LEDs */
+	pwm_channel_disable(PWM0, PIN_PWM_LED0_CHANNEL);
+
+	/* Set PWM clock A as PWM_FREQUENCY*PERIOD_VALUE (clock B is not used) */
+	pwm_clock_t clock_setting = {
+		.ul_clka = PWM_FREQUENCY * PERIOD_VALUE,
+		.ul_clkb = 0,
+		.ul_mck = sysclk_get_peripheral_hz()
+	};
+  pwm_init(PWM0, &clock_setting);
+
+  /* Initialize PWM channel for LED0 */
+  /* Period is left-aligned */
+  g_pwm_channel_led.alignment = PWM_ALIGN_CENTER;
+  /* Output waveform starts at a low level */
+  g_pwm_channel_led.polarity = PWM_HIGH;
+  /* Use PWM clock A as source clock */
+  g_pwm_channel_led.ul_prescaler = PWM_CMR_CPRE_CLKA;
+  /* Period value of output waveform */
+  g_pwm_channel_led.ul_period = PERIOD_VALUE;
+  /* Duty cycle value of output waveform */
+  g_pwm_channel_led.ul_duty = duty;
+  g_pwm_channel_led.channel = channel;
+  pwm_channel_init(PWM0, &g_pwm_channel_led);
+  
+  /* Enable PWM channels for LEDs */
+  pwm_channel_enable(PWM0, channel);
+  }
+  
+static void task_pwm(void *pvParameters){
+	  uint duty = 0;
+	  const TickType_t xDelay = 10 / portTICK_PERIOD_MS;
+	  PWM0_init(0, duty);
+
+	  /* Infinite loop */
+	  while (1) {
+		  /* fade in */
+		  for(duty = 0; duty <= 100; duty++){
+			  pwm_channel_update_duty(PWM0, &g_pwm_channel_led, 100-duty);
+			  vTaskDelay(xDelay);
+		  }
+		  /* fade out*/
+		  for(duty = 0; duty <= 100; duty++){
+			  pwm_channel_update_duty(PWM0, &g_pwm_channel_led, duty);
+			  vTaskDelay(xDelay);
+		  }
+	  }
+  }
+
 
 static int32_t convert_adc_to_temp(int32_t ADC_value){
 
@@ -491,6 +618,39 @@ void mxt_handler(struct mxt_device *device, uint *x, uint *y)
 /* tasks                                                                */
 /************************************************************************/
 
+
+static void task_led(void *pvParameters)
+{
+        /* We are using the semaphore for synchronisation so we create a binary
+        semaphore rather than a mutex.  We must make sure that the interrupt
+        does not attempt to use the semaphore before it is created! */
+	xSemaphore_but1 = xSemaphoreCreateBinary();
+	xSemaphore_but2 = xSemaphoreCreateBinary();
+	int duty = 0;
+	char texto;
+
+        /* devemos iniciar a interrupcao no pino somente apos termos alocado
+           os recursos (no caso semaforo), nessa funcao inicializamos 
+           o botao e seu callback*/
+        io_init();
+
+	for (;;) {
+		if( xSemaphoreTake(xSemaphore_but1, ( TickType_t ) 500) == pdTRUE ){
+			duty = duty+10;
+			ili9488_set_foreground_color(COLOR_CONVERT(COLOR_WHITE));
+			ili9488_draw_filled_rectangle(10,10,80,90);
+			sprintf(texto, "%d", duty);
+			font_draw_text(&digital52, texto, 10, 10, 1);
+		}
+		if( xSemaphoreTake(xSemaphore_but2, ( TickType_t ) 500) == pdTRUE && duty>0 ){
+			duty=duty-10;
+			ili9488_set_foreground_color(COLOR_CONVERT(COLOR_WHITE));
+			ili9488_draw_filled_rectangle(10,10,80,90);
+			sprintf(texto, "%d", duty);
+			font_draw_text(&digital52, texto, 10, 10, 1);
+		}
+	}
+}
 void task_mxt(void){
   
   	struct mxt_device device; /* Device data container */
@@ -574,8 +734,12 @@ int main(void)
     printf("Failed to create test led task\r\n");
   }
   
-  if (xTaskCreate(task_afec, "afec", TASK_AFEC_STACK_SIZE, NULL, TASK_AFEC_STACK_PRIORITY, NULL) != pdPASS) {
- 	printf("Failed to create test led task\r\n");
+ if (xTaskCreate(task_led, "Led", TASK_LED_STACK_SIZE, NULL, TASK_LED_STACK_PRIORITY, NULL)!=pdPASS) {
+	printf("Failed to create test led task\r\n");
+ }
+  
+  if(xTaskCreate(task_pwm, "pwm", TASK_PWM_STACK_SIZE, NULL,TASK_PWM_STACK_PRIORITY, NULL)!=pdPASS) {
+	  printf("Failed to create test led task \n")
   }
 
   /* Start the scheduler. */
@@ -588,6 +752,5 @@ int main(void)
 
   }
 
-
 	return 0;
-}
+	}
