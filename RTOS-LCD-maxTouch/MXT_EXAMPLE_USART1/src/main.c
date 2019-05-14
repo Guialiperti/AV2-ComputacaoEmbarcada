@@ -632,7 +632,7 @@ static void task_led(void *pvParameters)
         /* devemos iniciar a interrupcao no pino somente apos termos alocado
            os recursos (no caso semaforo), nessa funcao inicializamos 
            o botao e seu callback*/
-        io_init();
+   io_init();
 
 	for (;;) {
 		if( xSemaphoreTake(xSemaphore_but1, ( TickType_t ) 500) == pdTRUE ){
@@ -734,12 +734,12 @@ int main(void)
     printf("Failed to create test led task\r\n");
   }
   
- if (xTaskCreate(task_led, "Led", TASK_LED_STACK_SIZE, NULL, TASK_LED_STACK_PRIORITY, NULL)!=pdPASS) {
+ if (xTaskCreate(task_led, "Led", TASK_LED_STACK_SIZE, NULL, TASK_LED_STACK_PRIORITY, NULL) != pdPASS) {
 	printf("Failed to create test led task\r\n");
  }
   
   if(xTaskCreate(task_pwm, "pwm", TASK_PWM_STACK_SIZE, NULL,TASK_PWM_STACK_PRIORITY, NULL)!=pdPASS) {
-	  printf("Failed to create test led task \n")
+	  printf("Failed to create test led task \n");
   }
 
   /* Start the scheduler. */
@@ -753,4 +753,4 @@ int main(void)
   }
 
 	return 0;
-	}
+}
