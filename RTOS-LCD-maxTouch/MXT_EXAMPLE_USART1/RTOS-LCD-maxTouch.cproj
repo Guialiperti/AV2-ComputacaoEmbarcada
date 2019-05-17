@@ -307,14 +307,14 @@
     <file path="src/ASF/thirdparty/freertos/freertos-8.2.3/Source/list.c" framework="" version="3.40.0" source="thirdparty\freertos\freertos-8.2.3\Source\list.c" changed="False" content-id="Atmel.ASF" />
     <file path="src/ASF/thirdparty/freertos/freertos-8.2.3/Source/tasks.c" framework="" version="3.40.0" source="thirdparty\freertos\freertos-8.2.3\Source\tasks.c" changed="False" content-id="Atmel.ASF" />
     <file path="src/ASF/thirdparty/freertos/freertos-8.2.3/Source/timers.c" framework="" version="3.40.0" source="thirdparty\freertos\freertos-8.2.3\Source\timers.c" changed="False" content-id="Atmel.ASF" />
-    <file path="src/ASF/sam/drivers/afec/afec.c" framework="" version="3.40.0" source="sam\drivers\afec\afec.c" changed="False" content-id="Atmel.ASF" />
     <file path="src/ASF/sam/drivers/afec/afec.h" framework="" version="3.40.0" source="sam\drivers\afec\afec.h" changed="False" content-id="Atmel.ASF" />
     <file path="src/ASF/common/services/sleepmgr/sam/sleepmgr.c" framework="" version="3.40.0" source="common\services\sleepmgr\sam\sleepmgr.c" changed="False" content-id="Atmel.ASF" />
     <file path="src/ASF/common/services/sleepmgr/sleepmgr.h" framework="" version="3.40.0" source="common\services\sleepmgr\sleepmgr.h" changed="False" content-id="Atmel.ASF" />
     <file path="src/ASF/common/services/sleepmgr/sam/sleepmgr.h" framework="" version="3.40.0" source="common\services\sleepmgr\sam\sleepmgr.h" changed="False" content-id="Atmel.ASF" />
     <file path="src/Config/conf_sleepmgr.h" framework="" version="3.40.0" source="common\services\sleepmgr\sam\module_config\conf_sleepmgr.h" changed="False" content-id="Atmel.ASF" />
-    <file path="src/ASF/sam/drivers/pwm/pwm.c" framework="" version="3.40.0" source="sam\drivers\pwm\pwm.c" changed="False" content-id="Atmel.ASF" />
+    <file path="src/ASF/sam/drivers/afec/afec.c" framework="" version="3.40.0" source="sam\drivers\afec\afec.c" changed="False" content-id="Atmel.ASF" />
     <file path="src/ASF/sam/drivers/pwm/pwm.h" framework="" version="3.40.0" source="sam\drivers\pwm\pwm.h" changed="False" content-id="Atmel.ASF" />
+    <file path="src/ASF/sam/drivers/pwm/pwm.c" framework="" version="3.40.0" source="sam\drivers\pwm\pwm.c" changed="False" content-id="Atmel.ASF" />
   </files>
   <documentation help="http://asf.atmel.com/docs/3.40.0/common.components.touch.mxt.example_usart.same70_xplained/html/index.html" />
   <offline-documentation help="" />
@@ -763,6 +763,48 @@
     <Folder Include="src\config\" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="src\ar.h">
+      <SubType>compile</SubType>
+    </Compile>
+    <None Include="src\ASF\sam\drivers\afec\afec.h">
+      <SubType>compile</SubType>
+    </None>
+    <Compile Include="src\ASF\common\services\sleepmgr\sam\sleepmgr.c">
+      <SubType>compile</SubType>
+    </Compile>
+    <None Include="src\ASF\common\services\sleepmgr\sleepmgr.h">
+      <SubType>compile</SubType>
+    </None>
+    <None Include="src\ASF\common\services\sleepmgr\sam\sleepmgr.h">
+      <SubType>compile</SubType>
+    </None>
+    <None Include="src\config\conf_sleepmgr.h">
+      <SubType>compile</SubType>
+    </None>
+    <Compile Include="src\ASF\sam\drivers\afec\afec.c">
+      <SubType>compile</SubType>
+    </Compile>
+    <None Include="src\ASF\sam\drivers\pwm\pwm.h">
+      <SubType>compile</SubType>
+    </None>
+    <Compile Include="src\ASF\sam\drivers\pwm\pwm.c">
+      <SubType>compile</SubType>
+    </Compile>
+    <Compile Include="src\digital521.h">
+      <SubType>compile</SubType>
+    </Compile>
+    <Compile Include="src\soneca.h">
+      <SubType>compile</SubType>
+    </Compile>
+    <Compile Include="src\termometro.h">
+      <SubType>compile</SubType>
+    </Compile>
+    <Compile Include="src\tfont.h">
+      <SubType>compile</SubType>
+    </Compile>
+    <None Include="src\ar.png">
+      <SubType>compile</SubType>
+    </None>
     <None Include="src\asf.h">
       <SubType>compile</SubType>
     </None>
@@ -1357,15 +1399,6 @@
     <Compile Include="src\ASF\common\services\serial\usart_serial.c">
       <SubType>compile</SubType>
     </Compile>
-    <Compile Include="src\ASF\common\services\sleepmgr\sam\sleepmgr.c">
-      <SubType>compile</SubType>
-    </Compile>
-    <None Include="src\ASF\common\services\sleepmgr\sleepmgr.h">
-      <SubType>compile</SubType>
-    </None>
-    <None Include="src\ASF\common\services\sleepmgr\sam\sleepmgr.h">
-      <SubType>compile</SubType>
-    </None>
     <Compile Include="src\ASF\common\services\spi\sam_spi\spi_master.c">
       <SubType>compile</SubType>
     </Compile>
@@ -1393,12 +1426,6 @@
     <None Include="src\ASF\sam\components\display\ili9488\ili9488.h">
       <SubType>compile</SubType>
     </None>
-    <Compile Include="src\ASF\sam\drivers\afec\afec.c">
-      <SubType>compile</SubType>
-    </Compile>
-    <None Include="src\ASF\sam\drivers\afec\afec.h">
-      <SubType>compile</SubType>
-    </None>
     <Compile Include="src\ASF\sam\drivers\mpu\mpu.c">
       <SubType>compile</SubType>
     </Compile>
@@ -1414,12 +1441,6 @@
     <Compile Include="src\ASF\sam\drivers\pmc\sleep.c">
       <SubType>compile</SubType>
     </Compile>
-    <Compile Include="src\ASF\sam\drivers\pwm\pwm.c">
-      <SubType>compile</SubType>
-    </Compile>
-    <None Include="src\ASF\sam\drivers\pwm\pwm.h">
-      <SubType>compile</SubType>
-    </None>
     <Compile Include="src\ASF\sam\drivers\spi\spi.c">
       <SubType>compile</SubType>
     </Compile>
@@ -1519,9 +1540,6 @@
     <Compile Include="src\ASF\thirdparty\freertos\freertos-8.2.3\Source\timers.c">
       <SubType>compile</SubType>
     </Compile>
-    <None Include="src\config\conf_sleepmgr.h">
-      <SubType>compile</SubType>
-    </None>
     <Compile Include="src\main.c">
       <SubType>compile</SubType>
     </Compile>
@@ -1535,6 +1553,15 @@
       <SubType>compile</SubType>
     </None>
     <None Include="src\ASF\thirdparty\CMSIS\README.txt">
+      <SubType>compile</SubType>
+    </None>
+    <None Include="src\interface.png">
+      <SubType>compile</SubType>
+    </None>
+    <None Include="src\soneca.png">
+      <SubType>compile</SubType>
+    </None>
+    <None Include="src\termometro.png">
       <SubType>compile</SubType>
     </None>
   </ItemGroup>

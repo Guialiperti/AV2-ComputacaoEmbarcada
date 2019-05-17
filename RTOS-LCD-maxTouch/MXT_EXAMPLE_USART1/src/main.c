@@ -88,20 +88,39 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <assert.h>
+
 #include "conf_board.h"
 #include "conf_example.h"
 #include "conf_uart_serial.h"
 #include "tfont.h"
 #include "digital521.h"
- 
+
+#include "asf.h"
+#include "stdio_serial.h"
+#include "conf_board.h"
+#include "conf_clock.h"
+
+
+// ICONS
+
 #include "ar.h"
 #include "soneca.h"
 #include "termometro.h"
 
 /************************************************************************/
-/* LCD + TOUCH                                                          */
+/* Globals                                                              */
 /************************************************************************/
-#define MAX_ENTRIES        3
+volatile uint32_t duty = 0;
+volatile char temp_text[512];
+volatile char duty_text[512];
+volatile char texto[32];
+
+
+/* Canal do sensor de temperatura */
+#define AFEC_CHANNEL 0
+
+// AFEC
 /** Reference voltage for AFEC,in mv. */
 #define VOLT_REF        (3300)
 
@@ -109,19 +128,15 @@
 /** 2^12 - 1                  */
 #define MAX_DIGITAL     (4095)
 
-/************************************************************************/
-/* Globals                                                              */
-/************************************************************************/
-
 #define BUT1_PIO           PIOD
 #define BUT1_PIO_ID        ID_PIOD
 #define BUT1_PIO_IDX       28u
-#define BUT1_PIO_IDX_MASK  (1u << BUT1_PIO_IDX)
+#define BUT1_IDX_MASK  (1u << BUT1_PIO_IDX)
 
-#define BUT2_PIO           PIOC
+#define BUT2_PIO          PIOC
 #define BUT2_PIO_ID        ID_PIOC
 #define BUT2_PIO_IDX       31u
-#define BUT2_PIO_IDX_MASK  (1u << BUT1_PIO_IDX)
+#define BUT2_IDX_MASK  (1u << BUT2_PIO_IDX)
 
 #define PIO_PWM_0 PIOA
 #define ID_PIO_PWM_0 ID_PIOA
@@ -134,8 +149,11 @@
 /** Initial duty cycle value */
 #define INIT_DUTY_VALUE    0
 
-pwm_channel_t g_pwm_channel_led;
 
+/************************************************************************/
+/* LCD + TOUCH                                                          */
+/************************************************************************/
+#define MAX_ENTRIES        3
 
 struct ili9488_opt_t g_ili9488_display_opt;
 const uint32_t BUTTON_W = 120;
@@ -145,74 +163,72 @@ const uint32_t BUTTON_X = ILI9488_LCD_WIDTH/2;
 const uint32_t BUTTON_Y = ILI9488_LCD_HEIGHT/2;
 
 
-/** The conversion data is done flag */
-volatile bool g_is_res_done = false;
+/************************************************************************/
+/* PWM                                                        */
+/************************************************************************/
 
-/** The conversion data value */
-volatile uint32_t g_ul_value = 0;
+/** PWM channel instance for LEDs */
+pwm_channel_t g_pwm_channel_led;
 
-volatile bool g_delay = false;
-volatile char texto[32];
-
-#define AFEC_CHANNEL 0
-	
 /************************************************************************/
 /* RTOS                                                                  */
 /************************************************************************/
 #define TASK_MXT_STACK_SIZE            (2*1024/sizeof(portSTACK_TYPE))
-#define TASK_MXT_STACK_PRIORITY        (tskIDLE_PRIORITY)  
+#define TASK_MXT_STACK_PRIORITY        (tskIDLE_PRIORITY)
 
-#define TASK_LCD_STACK_SIZE            (2*1024/sizeof(portSTACK_TYPE))
+#define TASK_LCD_STACK_SIZE            (4*1024/sizeof(portSTACK_TYPE))
 #define TASK_LCD_STACK_PRIORITY        (tskIDLE_PRIORITY)
 
-#define TASK_AFEC_STACK_SIZE (2*1024/sizeof(portSTACK_TYPE))
-#define TASK_AFEC_STACK_PRIORITY (tskIDLE_PRIORITY)
-
-#define TASK_PWM_STACK_SIZE                (1024/sizeof(portSTACK_TYPE))
-#define TASK_PWM_STACK_PRIORITY            (tskIDLE_PRIORITY)
-
-#define TASK_LED_STACK_SIZE (1024/sizeof(portSTACK_TYPE)
-#define TASK_LED_STACK_PRIORITY  (tskIDLE_PRIORITY)
+#define TASK_AFEC_STACK_SIZE            (2*1024/sizeof(portSTACK_TYPE))
+#define TASK_AFEC_STACK_PRIORITY        (tskIDLE_PRIORITY)
 
 typedef struct {
-  uint x;
-  uint y;
+	uint x;
+	uint y;
 } touchData;
 
+
 QueueHandle_t xQueueTouch;
-SemaphoreHandle_t xSemaphore;
+QueueHandle_t xQueueDuty;
+QueueHandle_t xQueueTemp;
+QueueHandle_t xQueueAfec;
+QueueHandle_t xQueuePot;
+
 SemaphoreHandle_t xSemaphore_but1;
 SemaphoreHandle_t xSemaphore_but2;
+
+
+
 
 /************************************************************************/
 /* RTOS hooks                                                           */
 /************************************************************************/
 
 /**
- * \brief Called if stack overflow during execution
- */
+* \brief Called if stack overflow during execution
+*/
 extern void vApplicationStackOverflowHook(xTaskHandle *pxTask,
-		signed char *pcTaskName)
+signed char *pcTaskName)
 {
 	printf("stack overflow %x %s\r\n", pxTask, (portCHAR *)pcTaskName);
 	/* If the parameters have been corrupted then inspect pxCurrentTCB to
-	 * identify which task has overflowed its stack.
-	 */
+	* identify which task has overflowed its stack.
+	*/
 	for (;;) {
 	}
 }
 
 /**
- * \brief This function is called by FreeRTOS idle task
- */
+* \brief This function is called by FreeRTOS idle task
+*/
 extern void vApplicationIdleHook(void)
 {
 	pmc_sleep(SAM_PM_SMODE_SLEEP_WFI);
 }
 
 /**
- * \brief This function is called by FreeRTOS each tick
- */
+* \brief This function is called by FreeRTOS each tick
+*/
 extern void vApplicationTickHook(void)
 {
 }
@@ -245,28 +261,14 @@ static void configure_lcd(void){
 	ili9488_init(&g_ili9488_display_opt);
 }
 
-void but1_callback(void){
-	BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-	printf("but_callback \n");
-	xSemaphoreGiveFromISR(xSemaphore_but1, &xHigherPriorityTaskWoken);
-	printf("semafaro tx \n");
-}
-
-void but2_callback(void){
-	BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-	printf("but_callback2222 \n");
-	xSemaphoreGiveFromISR(xSemaphore_but2, &xHigherPriorityTaskWoken);
-	printf("semafaro tx2222 \n");
-}
-
 /**
- * \brief Set maXTouch configuration
- *
- * This function writes a set of predefined, optimal maXTouch configuration data
- * to the maXTouch Xplained Pro.
- *
- * \param device Pointer to mxt_device struct
- */
+* \brief Set maXTouch configuration
+*
+* This function writes a set of predefined, optimal maXTouch configuration data
+* to the maXTouch Xplained Pro.
+*
+* \param device Pointer to mxt_device struct
+*/
 static void mxt_init(struct mxt_device *device)
 {
 	enum status_code status;
@@ -313,83 +315,206 @@ static void mxt_init(struct mxt_device *device)
 
 	/* Initialize the maXTouch device */
 	status = mxt_init_device(device, MAXTOUCH_TWI_INTERFACE,
-			MAXTOUCH_TWI_ADDRESS, MAXTOUCH_XPRO_CHG_PIO);
+	MAXTOUCH_TWI_ADDRESS, MAXTOUCH_XPRO_CHG_PIO);
 	Assert(status == STATUS_OK);
 
 	/* Issue soft reset of maXTouch device by writing a non-zero value to
-	 * the reset register */
+	* the reset register */
 	mxt_write_config_reg(device, mxt_get_object_address(device,
-			MXT_GEN_COMMANDPROCESSOR_T6, 0)
-			+ MXT_GEN_COMMANDPROCESSOR_RESET, 0x01);
+	MXT_GEN_COMMANDPROCESSOR_T6, 0)
+	+ MXT_GEN_COMMANDPROCESSOR_RESET, 0x01);
 
 	/* Wait for the reset of the device to complete */
 	delay_ms(MXT_RESET_TIME);
 
 	/* Write data to configuration registers in T7 configuration object */
 	mxt_write_config_reg(device, mxt_get_object_address(device,
-			MXT_GEN_POWERCONFIG_T7, 0) + 0, 0x20);
+	MXT_GEN_POWERCONFIG_T7, 0) + 0, 0x20);
 	mxt_write_config_reg(device, mxt_get_object_address(device,
-			MXT_GEN_POWERCONFIG_T7, 0) + 1, 0x10);
+	MXT_GEN_POWERCONFIG_T7, 0) + 1, 0x10);
 	mxt_write_config_reg(device, mxt_get_object_address(device,
-			MXT_GEN_POWERCONFIG_T7, 0) + 2, 0x4b);
+	MXT_GEN_POWERCONFIG_T7, 0) + 2, 0x4b);
 	mxt_write_config_reg(device, mxt_get_object_address(device,
-			MXT_GEN_POWERCONFIG_T7, 0) + 3, 0x84);
+	MXT_GEN_POWERCONFIG_T7, 0) + 3, 0x84);
 
 	/* Write predefined configuration data to configuration objects */
 	mxt_write_config_object(device, mxt_get_object_address(device,
-			MXT_GEN_ACQUISITIONCONFIG_T8, 0), &t8_object);
+	MXT_GEN_ACQUISITIONCONFIG_T8, 0), &t8_object);
 	mxt_write_config_object(device, mxt_get_object_address(device,
-			MXT_TOUCH_MULTITOUCHSCREEN_T9, 0), &t9_object);
+	MXT_TOUCH_MULTITOUCHSCREEN_T9, 0), &t9_object);
 	mxt_write_config_object(device, mxt_get_object_address(device,
-			MXT_SPT_CTE_CONFIGURATION_T46, 0), &t46_object);
+	MXT_SPT_CTE_CONFIGURATION_T46, 0), &t46_object);
 	mxt_write_config_object(device, mxt_get_object_address(device,
-			MXT_PROCI_SHIELDLESS_T56, 0), &t56_object);
+	MXT_PROCI_SHIELDLESS_T56, 0), &t56_object);
 
 	/* Issue recalibration command to maXTouch device by writing a non-zero
-	 * value to the calibrate register */
+	* value to the calibrate register */
 	mxt_write_config_reg(device, mxt_get_object_address(device,
-			MXT_GEN_COMMANDPROCESSOR_T6, 0)
-			+ MXT_GEN_COMMANDPROCESSOR_CALIBRATE, 0x01);
+	MXT_GEN_COMMANDPROCESSOR_T6, 0)
+	+ MXT_GEN_COMMANDPROCESSOR_CALIBRATE, 0x01);
 }
+
+
+/************************************************************************/
+/* Callbacks: / Handler                                                 */
+/************************************************************************/
 
 static void AFEC_callback(void)
 {
+	int32_t temp_value;
+	temp_value = afec_channel_get_value(AFEC0, AFEC_CHANNEL);
+	xQueueSendFromISR( xQueueAfec, &temp_value, 0);
+	//temp_value = afec_channel_get_value(AFEC0, AFEC_CHANNEL);
+	
+}
+
+void but1_callback(void){
 	BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-	//printf("but_callback \n");
-	xSemaphoreGiveFromISR(xSemaphore, &xHigherPriorityTaskWoken);
-	//printf("semafaro tx \n");
+	printf("but1_callback \n");
+	xSemaphoreGiveFromISR(xSemaphore_but1, &xHigherPriorityTaskWoken);
+}
+
+void but2_callback(void){
+	BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+	printf("but2_callback\n");
+	xSemaphoreGiveFromISR(xSemaphore_but2, &xHigherPriorityTaskWoken);
 }
 
 /************************************************************************/
 /* funcoes                                                              */
 /************************************************************************/
 
+void io_init(void)
+{
+	// Inicializa clock do perifï¿½rico PIO responsavel pelo botao
+	pmc_enable_periph_clk(BUT1_PIO_ID);
+	pmc_enable_periph_clk(BUT2_PIO_ID);
+
+	// Configura PIO para lidar com o pino do botï¿½o como entrada
+	// com pull-up
+	pio_configure(BUT1_PIO, PIO_INPUT, BUT1_IDX_MASK, PIO_PULLUP);
+	pio_configure(BUT2_PIO, PIO_INPUT, BUT2_IDX_MASK, PIO_PULLUP);
+
+	// Configura interrupï¿½ï¿½o no pino referente ao botao e associa
+	// funï¿½ï¿½o de callback caso uma interrupï¿½ï¿½o for gerada
+	// a funï¿½ï¿½o de callback ï¿½ a: but_callback()
+	pio_handler_set(BUT1_PIO,
+	BUT1_PIO_ID,
+	BUT1_IDX_MASK,
+	PIO_IT_FALL_EDGE,
+	but1_callback);
+	
+	pio_handler_set(BUT2_PIO,
+	BUT2_PIO_ID,
+	BUT2_IDX_MASK,
+	PIO_IT_FALL_EDGE,
+	but2_callback);
+
+	// Ativa interrupï¿½ï¿½o
+	pio_enable_interrupt(BUT1_PIO, BUT1_IDX_MASK);
+	pio_enable_interrupt(BUT2_PIO, BUT2_IDX_MASK);
+
+	// Configura NVIC para receber interrupcoes do PIO do botao
+	// com prioridade 4 (quanto mais prï¿½ximo de 0 maior)
+	NVIC_EnableIRQ(BUT1_PIO_ID);
+	NVIC_SetPriority(BUT1_PIO_ID, 4);
+	NVIC_EnableIRQ(BUT2_PIO_ID);
+	NVIC_SetPriority(BUT2_PIO_ID, 4);
+}
+
+void PWM0_init(uint channel, uint duty){
+	/* Enable PWM peripheral clock */
+	pmc_enable_periph_clk(ID_PWM0);
+
+	/* Disable PWM channels for LEDs */
+	pwm_channel_disable(PWM0, PIN_PWM_LED0_CHANNEL);
+
+	/* Set PWM clock A as PWM_FREQUENCY*PERIOD_VALUE (clock B is not used) */
+	pwm_clock_t clock_setting = {
+		.ul_clka = PWM_FREQUENCY * PERIOD_VALUE,
+		.ul_clkb = 0,
+		.ul_mck = sysclk_get_peripheral_hz()
+	};
+	
+	pwm_init(PWM0, &clock_setting);
+
+	/* Initialize PWM channel for LED0 */
+	/* Period is left-aligned */
+	g_pwm_channel_led.alignment = PWM_ALIGN_CENTER;
+	/* Output waveform starts at a low level */
+	g_pwm_channel_led.polarity = PWM_HIGH;
+	/* Use PWM clock A as source clock */
+	g_pwm_channel_led.ul_prescaler = PWM_CMR_CPRE_CLKA;
+	/* Period value of output waveform */
+	g_pwm_channel_led.ul_period = PERIOD_VALUE;
+	/* Duty cycle value of output waveform */
+	g_pwm_channel_led.ul_duty = duty;
+	g_pwm_channel_led.channel = channel;
+	pwm_channel_init(PWM0, &g_pwm_channel_led);
+	
+	/* Enable PWM channels for LEDs */
+	pwm_channel_enable(PWM0, channel);
+}
+
+static int32_t convert_adc_to_temp2(int32_t ADC_value){
+
+  int32_t ul_vol;
+  int32_t ul_temp;
+
+  /*
+   * converte bits -> tens?o (Volts)
+   */
+	ul_vol = ADC_value * 100 / 4096;
+
+  /*
+   * According to datasheet, The output voltage VT = 0.72V at 27C
+   * and the temperature slope dVT/dT = 2.33 mV/C
+   */
+  return(ul_vol);
+}
+
+static int32_t convert_adc_to_temp(int32_t ADC_value){
+
+  int32_t ul_vol;
+  int32_t ul_temp;
+	ul_temp = (100*ADC_value + 5900)/4026;
+  return(ul_temp-3);
+}
+
+void font_draw_text(tFont *font, const char *text, int x, int y, int spacing) {
+	char *p = text;
+	while(*p != NULL) {
+		char letter = *p;
+		int letter_offset = letter - font->start_char;
+		if(letter <= font->end_char) {
+			tChar *current_char = font->chars + letter_offset;
+			ili9488_draw_pixmap(x, y, current_char->image->width, current_char->image->height, current_char->image->data);
+			x += current_char->image->width + spacing;
+		}
+		p++;
+	}
+}
+
 void draw_screen(void) {
 	ili9488_set_foreground_color(COLOR_CONVERT(COLOR_WHITE));
 	ili9488_draw_filled_rectangle(0, 0, ILI9488_LCD_WIDTH-1, ILI9488_LCD_HEIGHT-1);
+	ili9488_set_foreground_color(COLOR_CONVERT(COLOR_BLACK));
+	ili9488_draw_line(0, 250, 320, 250);
+	ili9488_draw_pixmap(200, 300, ar.width, ar.height, ar.data);
+	ili9488_draw_pixmap(60, 300, termometro.width, termometro.height, termometro.data);
+	ili9488_draw_pixmap(200, 30, soneca.width, soneca.height, soneca.data);
 }
 
-// void draw_button(uint32_t clicked) {
-// 	static uint32_t last_state = 255; // undefined
-// 	if(clicked == last_state) return;
-// 	
-// 	ili9488_set_foreground_color(COLOR_CONVERT(COLOR_BLACK));
-// 	ili9488_draw_filled_rectangle(BUTTON_X-BUTTON_W/2, BUTTON_Y-BUTTON_H/2, BUTTON_X+BUTTON_W/2, BUTTON_Y+BUTTON_H/2);
-// 	if(clicked) {
-// 		ili9488_set_foreground_color(COLOR_CONVERT(COLOR_TOMATO));
-// 		ili9488_draw_filled_rectangle(BUTTON_X-BUTTON_W/2+BUTTON_BORDER, BUTTON_Y+BUTTON_BORDER, BUTTON_X+BUTTON_W/2-BUTTON_BORDER, BUTTON_Y+BUTTON_H/2-BUTTON_BORDER);
-// 	} else {
-// 		ili9488_set_foreground_color(COLOR_CONVERT(COLOR_GREEN));
-// 		ili9488_draw_filled_rectangle(BUTTON_X-BUTTON_W/2+BUTTON_BORDER, BUTTON_Y-BUTTON_H/2+BUTTON_BORDER, BUTTON_X+BUTTON_W/2-BUTTON_BORDER, BUTTON_Y-BUTTON_BORDER);
-// 	}
-// 	last_state = clicked;
-// }
+void draw_temp(int temp) {
+	sprintf(temp_text, "%2d C ", temp);
+	font_draw_text(&digital52, temp_text, 60, 380, 1);
+}
 
-void draw_icons(void){
-		ili9488_draw_pixmap(200, 30, soneca.width, soneca.height, soneca.data);
-		ili9488_draw_pixmap(60, 300, termometro.width, termometro.height, termometro.data);
-		ili9488_draw_pixmap(200, 300, ar.width, ar.height, ar.data);
-	};
+
+void draw_duty(int duty) {
+	sprintf(duty_text, "%2d % ", duty);
+	font_draw_text(&digital52, duty_text, 200, 380, 1);
+}
 
 uint32_t convert_axis_system_x(uint32_t touch_y) {
 	// entrada: 4096 - 0 (sistema de coordenadas atual)
@@ -406,12 +531,47 @@ uint32_t convert_axis_system_y(uint32_t touch_x) {
 void update_screen(uint32_t tx, uint32_t ty) {
 	if(tx >= BUTTON_X-BUTTON_W/2 && tx <= BUTTON_X + BUTTON_W/2) {
 		if(ty >= BUTTON_Y-BUTTON_H/2 && ty <= BUTTON_Y) {
-			//draw_button(1);
-		} else if(ty > BUTTON_Y && ty < BUTTON_Y + BUTTON_H/2) {
-			//draw_button(0);
+			} else if(ty > BUTTON_Y && ty < BUTTON_Y + BUTTON_H/2) {
 		}
 	}
 }
+
+void mxt_handler(struct mxt_device *device, uint *x, uint *y)
+{
+	/* USART tx buffer initialized to 0 */
+	uint8_t i = 0; /* Iterator */
+
+	/* Temporary touch event data struct */
+	struct mxt_touch_event touch_event;
+	
+	/* first touch only */
+	uint first = 0;
+
+	/* Collect touch events and put the data in a string,
+	* maximum 2 events at the time */
+	do {
+
+		/* Read next next touch event in the queue, discard if read fails */
+		if (mxt_read_touch_event(device, &touch_event) != STATUS_OK) {
+			continue;
+		}
+		
+		/************************************************************************/
+		/* Envia dados via fila RTOS                                            */
+		/************************************************************************/
+		if(first == 0 ){
+			*x = convert_axis_system_x(touch_event.y);
+			*y = convert_axis_system_y(touch_event.x);
+			first = 1;
+		}
+		
+		i++;
+
+		/* Check if there is still messages in the queue and
+		* if we have reached the maximum numbers of events */
+	} while ((mxt_is_message_pending(device)) & (i < MAX_ENTRIES));
+}
+
 
 static void config_ADC(void){
 	afec_enable(AFEC0);
@@ -429,7 +589,7 @@ static void config_ADC(void){
 	afec_set_trigger(AFEC0, AFEC_TRIG_SW);
 
 	/* configura call back */
-	afec_set_callback(AFEC0, AFEC_INTERRUPT_EOC_0,	AFEC_callback, 1);
+	afec_set_callback(AFEC0, AFEC_INTERRUPT_EOC_0,	AFEC_callback, 5);
 
 	/*** Configuracao espec?fica do canal AFEC ***/
 	struct afec_ch_config afec_ch_cfg;
@@ -454,203 +614,10 @@ static void config_ADC(void){
 	afec_channel_enable(AFEC0, AFEC_CHANNEL);
 }
 
-void io_init(void)
-{
-	// Inicializa clock do periférico PIO responsavel pelo botao
-	pmc_enable_periph_clk(BUT1_PIO_ID);
-	pmc_enable_periph_clk(BUT2_PIO_ID);
-
-	// Configura PIO para lidar com o pino do botão como entrada
-	// com pull-up
-	pio_configure(BUT1_PIO, PIO_INPUT, BUT1_PIO_IDX_MASK, PIO_PULLUP);
-	pio_configure(BUT2_PIO, PIO_INPUT, BUT2_PIO_IDX_MASK, PIO_PULLUP);
-
-	// Configura interrupção no pino referente ao botao e associa
-	// função de callback caso uma interrupção for gerada
-	// a função de callback é a: but_callback()
-	pio_handler_set(BUT1_PIO,
-	BUT1_PIO_ID,
-	BUT1_PIO_IDX_MASK,
-	PIO_IT_FALL_EDGE,
-	but1_callback);
-	
-	pio_handler_set(BUT2_PIO,
-	BUT2_PIO_ID,
-	BUT2_PIO_IDX_MASK,
-	PIO_IT_FALL_EDGE,
-	but2_callback);
-
-	// Ativa interrupção
-	pio_enable_interrupt(BUT1_PIO, BUT1_PIO_IDX_MASK);
-	pio_enable_interrupt(BUT2_PIO, BUT2_PIO_IDX_MASK);
-
-	// Configura NVIC para receber interrupcoes do PIO do botao
-	// com prioridade 4 (quanto mais próximo de 0 maior)
-	NVIC_EnableIRQ(BUT1_PIO_ID);
-	NVIC_SetPriority(BUT1_PIO_ID, 4); // Prioridade 4
-	NVIC_EnableIRQ(BUT2_PIO_ID);
-	NVIC_SetPriority(BUT2_PIO_ID, 4);
-}
-
-void PWM0_init(uint channel, uint duty){
-	/* Enable PWM peripheral clock */
-	pmc_enable_periph_clk(ID_PWM0);
-
-	/* Disable PWM channels for LEDs */
-	pwm_channel_disable(PWM0, PIN_PWM_LED0_CHANNEL);
-
-	/* Set PWM clock A as PWM_FREQUENCY*PERIOD_VALUE (clock B is not used) */
-	pwm_clock_t clock_setting = {
-		.ul_clka = PWM_FREQUENCY * PERIOD_VALUE,
-		.ul_clkb = 0,
-		.ul_mck = sysclk_get_peripheral_hz()
-	};
-  pwm_init(PWM0, &clock_setting);
-
-  /* Initialize PWM channel for LED0 */
-  /* Period is left-aligned */
-  g_pwm_channel_led.alignment = PWM_ALIGN_CENTER;
-  /* Output waveform starts at a low level */
-  g_pwm_channel_led.polarity = PWM_HIGH;
-  /* Use PWM clock A as source clock */
-  g_pwm_channel_led.ul_prescaler = PWM_CMR_CPRE_CLKA;
-  /* Period value of output waveform */
-  g_pwm_channel_led.ul_period = PERIOD_VALUE;
-  /* Duty cycle value of output waveform */
-  g_pwm_channel_led.ul_duty = duty;
-  g_pwm_channel_led.channel = channel;
-  pwm_channel_init(PWM0, &g_pwm_channel_led);
-  
-  /* Enable PWM channels for LEDs */
-  pwm_channel_enable(PWM0, channel);
-  }
-  
-static void task_pwm(void *pvParameters){
-	  uint duty = 0;
-	  const TickType_t xDelay = 10 / portTICK_PERIOD_MS;
-	  PWM0_init(0, duty);
-
-	  /* Infinite loop */
-	  while (1) {
-		  /* fade in */
-		  for(duty = 0; duty <= 100; duty++){
-			  pwm_channel_update_duty(PWM0, &g_pwm_channel_led, 100-duty);
-			  vTaskDelay(xDelay);
-		  }
-		  /* fade out*/
-		  for(duty = 0; duty <= 100; duty++){
-			  pwm_channel_update_duty(PWM0, &g_pwm_channel_led, duty);
-			  vTaskDelay(xDelay);
-		  }
-	  }
-  }
-
-
-static int32_t convert_adc_to_temp(int32_t ADC_value){
-
-  int32_t ul_vol;
-  int32_t ul_temp;
-
-  /*
-   * converte bits -> tens?o (Volts)
-   */
-	ul_vol = ADC_value * VOLT_REF / (float) MAX_DIGITAL;
-
-  /*
-   * According to datasheet, The output voltage VT = 0.72V at 27C
-   * and the temperature slope dVT/dT = 2.33 mV/C
-   */
-  ul_temp = (ul_vol - 720)  * 100 / 233 + 27;
-  return(ul_temp);
-}
-
-void font_draw_text(tFont *font, const char *text, int x, int y, int spacing) {
-	char *p = text;
-	while(*p != NULL) {
-		char letter = *p;
-		int letter_offset = letter - font->start_char;
-		if(letter <= font->end_char) {
-			tChar *current_char = font->chars + letter_offset;
-			ili9488_draw_pixmap(x, y, current_char->image->width, current_char->image->height, current_char->image->data);
-			x += current_char->image->width + spacing;
-		}
-		p++;
-	}
-}
-
-void mxt_handler(struct mxt_device *device, uint *x, uint *y)
-{
-	/* USART tx buffer initialized to 0 */
-	uint8_t i = 0; /* Iterator */
-
-	/* Temporary touch event data struct */
-	struct mxt_touch_event touch_event;
-  
-  /* first touch only */
-  uint first = 0;
-
-	/* Collect touch events and put the data in a string,
-	 * maximum 2 events at the time */
-	do {
-
-		/* Read next next touch event in the queue, discard if read fails */
-		if (mxt_read_touch_event(device, &touch_event) != STATUS_OK) {
-			continue;
-		}
-		
-    /************************************************************************/
-    /* Envia dados via fila RTOS                                            */
-    /************************************************************************/
-    if(first == 0 ){
-      *x = convert_axis_system_x(touch_event.y);
-      *y = convert_axis_system_y(touch_event.x);
-      first = 1;
-    }
-    
-		i++;
-
-		/* Check if there is still messages in the queue and
-		 * if we have reached the maximum numbers of events */
-	} while ((mxt_is_message_pending(device)) & (i < MAX_ENTRIES));
-}
-
 /************************************************************************/
 /* tasks                                                                */
 /************************************************************************/
 
-
-static void task_led(void *pvParameters)
-{
-        /* We are using the semaphore for synchronisation so we create a binary
-        semaphore rather than a mutex.  We must make sure that the interrupt
-        does not attempt to use the semaphore before it is created! */
-	xSemaphore_but1 = xSemaphoreCreateBinary();
-	xSemaphore_but2 = xSemaphoreCreateBinary();
-	int duty = 0;
-	char texto;
-
-        /* devemos iniciar a interrupcao no pino somente apos termos alocado
-           os recursos (no caso semaforo), nessa funcao inicializamos 
-           o botao e seu callback*/
-   io_init();
-
-	for (;;) {
-		if( xSemaphoreTake(xSemaphore_but1, ( TickType_t ) 500) == pdTRUE ){
-			duty = duty+10;
-			ili9488_set_foreground_color(COLOR_CONVERT(COLOR_WHITE));
-			ili9488_draw_filled_rectangle(10,10,80,90);
-			sprintf(texto, "%d", duty);
-			font_draw_text(&digital52, texto, 10, 10, 1);
-		}
-		if( xSemaphoreTake(xSemaphore_but2, ( TickType_t ) 500) == pdTRUE && duty>0 ){
-			duty=duty-10;
-			ili9488_set_foreground_color(COLOR_CONVERT(COLOR_WHITE));
-			ili9488_draw_filled_rectangle(10,10,80,90);
-			sprintf(texto, "%d", duty);
-			font_draw_text(&digital52, texto, 10, 10, 1);
-		}
-	}
-}
 void task_mxt(void){
   
   	struct mxt_device device; /* Device data container */
@@ -669,40 +636,107 @@ void task_mxt(void){
 }
 
 void task_lcd(void){
-  xQueueTouch = xQueueCreate( 10, sizeof( touchData ) );
+	xQueueTouch = xQueueCreate( 10, sizeof( touchData ) );
+	xQueueDuty = xQueueCreate( 10, sizeof( int32_t ) );
+	xQueueTemp = xQueueCreate( 10, sizeof( int32_t ) );
+	
 	configure_lcd();
-  
-  draw_screen();
-  font_draw_text(&digital52, "HH:MM", 0, 0, 1);
-  draw_icons();
-  font_draw_text(&digital52, "18", 60, 380, 1);
-  font_draw_text(&digital52, "100%", 200, 380, 1);
-  //draw_button(0);
-  touchData touch;
-    
-  while (true) {  
-     if (xQueueReceive( xQueueTouch, &(touch), ( TickType_t )  500 / portTICK_PERIOD_MS)) {
-       update_screen(touch.x, touch.y);
-       printf("x:%d y:%d\n", touch.x, touch.y);
-     }     
-  }	 
+	draw_screen();
+	//Escreve HH:MM no LCD
+	font_draw_text(&digital52, "HH:MM", 0, 0, 1);
+	
+	
+	touchData touch;
+	int32_t temp = 25;
+	int32_t real_temp = 25;
+	int32_t duty = 0;
+	
+	while (true) {
+		//
+		if (xQueueReceive( xQueueTouch, &(touch), ( TickType_t )  500 / portTICK_PERIOD_MS)) {
+			update_screen(touch.x, touch.y);
+			
+			printf("x:%d y:%d\n", touch.x, touch.y);
+		}
+		if (xQueueReceive(xQueueDuty, &(duty), ( TickType_t )  10 / portTICK_PERIOD_MS)) {
+			printf("\n potencia: %d", duty);
+			draw_duty(duty);
+			vTaskDelay(300 / portTICK_PERIOD_MS);
+		}
+		if (xQueueReceive(xQueueTemp, &(temp), ( TickType_t )  10 / portTICK_PERIOD_MS)) {
+			draw_temp(temp);
+			
+			printf("\ntemperatura desejada: %d", temp);
+		}
+
+	}
 }
 
-void task_afec(void){
+static void task_pwm(void){
+	const TickType_t xDelay = 10 / portTICK_PERIOD_MS;
 	
-	xSemaphore = xSemaphoreCreateBinary();
+	xQueuePot = xQueueCreate( 10, sizeof( int32_t ) );
+	int32_t pot;
 	
-	for (;;) {
-		if( xSemaphoreTake(xSemaphore, ( TickType_t ) 4000) == pdTRUE ){
-			
-			//100ms
-			//const TickType_t xDelay = 100/ portTICK_PERIOD_MS;
-			g_ul_value = afec_channel_get_value(AFEC0, AFEC_CHANNEL);
+	pmc_enable_periph_clk(ID_PIO_PWM_0);
+	pio_set_peripheral(PIO_PWM_0, PIO_PERIPH_A, MASK_PIN_PWM_0 );
+	PWM0_init(0, duty);
+
+	while (1) {
+		if (xQueueReceive( xQueuePot, &(pot), ( TickType_t ) 10 / portTICK_PERIOD_MS)) {
+			pwm_channel_update_duty(PWM0, &g_pwm_channel_led,(100 - pot));
+			printf("duty: %d", pot);
+			vTaskDelay(300 / portTICK_PERIOD_MS);
+			xQueueSend(xQueueDuty, &pot, 0);
 			
 		}
 	}
 }
 
+void task_afec(void){
+	xQueueAfec = xQueueCreate( 10, sizeof( int32_t ) );
+
+	config_ADC();
+	afec_start_software_conversion(AFEC0);
+	
+	int32_t adc_value;
+	int32_t temp_value;
+
+	while (true) {
+		if (xQueueReceive( xQueueAfec, &(adc_value), ( TickType_t )  10 / portTICK_PERIOD_MS)) {
+			temp_value = convert_adc_to_temp(adc_value);
+			afec_start_software_conversion(AFEC0);
+			xQueueSend( xQueueTemp, &temp_value, 0);
+		}
+	}
+}
+	
+static void task_led(void *pvParameters)
+{
+	xSemaphore_but1 = xSemaphoreCreateBinary();
+	xSemaphore_but2 = xSemaphoreCreateBinary();
+	int32_t duty = 0;
+    io_init();
+
+	if (xSemaphore_but1 == NULL)
+		printf("falha em criar o semaforo \n");
+	if (xSemaphore_but2 == NULL)
+	printf("falha em criar o semaforo2 \n");
+
+	while (1) {
+		if( xSemaphoreTake(xSemaphore_but1, ( TickType_t ) 500) == pdTRUE && duty < 100){
+			duty = duty + 10;
+			printf("%d", duty);
+		}
+		if( xSemaphoreTake(xSemaphore_but2, ( TickType_t ) 500) == pdTRUE && duty > 0 ){
+			duty = duty - 10;
+			printf("%d", duty);
+			
+		}
+		xQueueSend( xQueuePot, &duty, 0);
+		
+	}
+}
 /************************************************************************/
 /* main                                                                 */
 /************************************************************************/
@@ -719,38 +753,45 @@ int main(void)
 
 	sysclk_init(); /* Initialize system clocks */
 	board_init();  /* Initialize board */
-	config_ADC();
 	
 	/* Initialize stdio on USART */
 	stdio_serial_init(USART_SERIAL_EXAMPLE, &usart_serial_options);
-		
-  /* Create task to handler touch */
-  if (xTaskCreate(task_mxt, "mxt", TASK_MXT_STACK_SIZE, NULL, TASK_MXT_STACK_PRIORITY, NULL) != pdPASS) {
-    printf("Failed to create test led task\r\n");
-  }
-  
-  /* Create task to handler LCD */
-  if (xTaskCreate(task_lcd, "lcd", TASK_LCD_STACK_SIZE, NULL, TASK_LCD_STACK_PRIORITY, NULL) != pdPASS) {
-    printf("Failed to create test led task\r\n");
-  }
-  
- if (xTaskCreate(task_led, "Led", TASK_LED_STACK_SIZE, NULL, TASK_LED_STACK_PRIORITY, NULL) != pdPASS) {
-	printf("Failed to create test led task\r\n");
- }
-  
-  if(xTaskCreate(task_pwm, "pwm", TASK_PWM_STACK_SIZE, NULL,TASK_PWM_STACK_PRIORITY, NULL)!=pdPASS) {
-	  printf("Failed to create test led task \n");
-  }
-
-  /* Start the scheduler. */
-  vTaskStartScheduler();
-  
-  afec_start_software_conversion(AFEC0);
-
+	
+	
+	
+	/* Create task to handler touch */
+	if (xTaskCreate(task_mxt, "mxt", TASK_MXT_STACK_SIZE, NULL, TASK_MXT_STACK_PRIORITY, NULL) != pdPASS) {
+		printf("Failed to create test led task\r\n");
+	}
+	
+	/* Create task to handler LCD */
+	if (xTaskCreate(task_lcd, "lcd", TASK_LCD_STACK_SIZE, NULL, TASK_LCD_STACK_PRIORITY, NULL) != pdPASS) {
+		printf("Failed to create test led task\r\n");
+	}
+	
+	/* Create task to AFEC converter */
+	if (xTaskCreate(task_afec, "afec", TASK_AFEC_STACK_SIZE, NULL, TASK_AFEC_STACK_PRIORITY, NULL) != pdPASS) {
+		printf("Failed to create test led task\r\n");
+	}
+	
+	/* Create task to PWM converter */
+	if (xTaskCreate(task_pwm, "pwm", TASK_AFEC_STACK_SIZE, NULL, TASK_AFEC_STACK_PRIORITY, NULL) != pdPASS) {
+		printf("Failed to create test led task\r\n");
+	}
+	
+	/* Create task to PWM converter */
+	if (xTaskCreate(task_led, "led", TASK_AFEC_STACK_SIZE, NULL, TASK_AFEC_STACK_PRIORITY, NULL) != pdPASS) {
+		printf("Failed to create test led task\r\n");
+	}
+	/* Start the scheduler. */
+	vTaskStartScheduler();
+	
 
   while(1){
 
   }
 
-	return 0;
+
+  return 0;
+
 }
